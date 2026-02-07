@@ -62,8 +62,7 @@ describe("collectPluginNames", () => {
     expect(names.has("@elizaos/plugin-shell")).toBe(true);
     expect(names.has("@elizaos/plugin-personality")).toBe(true);
     expect(names.has("@elizaos/plugin-experience")).toBe(true);
-    // plugin-form disabled — upstream npm package missing dist/index.js
-    expect(names.has("@elizaos/plugin-form")).toBe(false);
+    expect(names.has("@elizaos/plugin-form")).toBe(true);
   });
 
   it("adds model-provider plugins when env keys are present", () => {

@@ -1,0 +1,23 @@
+# Runtime caches — populated at runtime, not needed in published package
+skills/.cache/
+
+# Source code (dist/ is the published build output)
+src/
+apps/
+scripts/
+test/
+vendor/
+deploy/
+
+# Config/dev files
+tsconfig.json
+tsdown.config.ts
+biome.json
+vitest.*.config.ts
+.dockerignore
+.gitattributes
+.gitignore
+
+# Build artifacts not needed in tarball
+*.tgz
+coverage/

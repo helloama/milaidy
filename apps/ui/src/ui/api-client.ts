@@ -1,0 +1,381 @@
+/**
+ * API client for the Milaidy backend.
+ *
+ * Thin fetch wrapper + WebSocket for real-time chat/events.
+ * Replaces the gateway WebSocket protocol entirely.
+ */
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type AgentState = "not_started" | "running" | "paused" | "stopped" | "restarting" | "error";
+
+export interface AgentStatus {
+  state: AgentState;
+  agentName: string;
+  model: string | undefined;
+  uptime: number | undefined;
+  startedAt: number | undefined;
+}
+
+export interface MessageExample {
+  user: string;
+  content: { text: string };
+}
+
+export interface StylePreset {
+  catchphrase: string;
+  hint: string;
+  bio: string[];
+  system: string;
+  style: {
+    all: string[];
+    chat: string[];
+    post: string[];
+  };
+  adjectives: string[];
+  topics: string[];
+  messageExamples: MessageExample[][];
+}
+
+export interface ProviderOption {
+  id: string;
+  name: string;
+  envKey: string | null;
+  pluginName: string;
+  keyPrefix: string | null;
+  description: string;
+}
+
+export interface OnboardingOptions {
+  names: string[];
+  styles: StylePreset[];
+  providers: ProviderOption[];
+  sharedStyleRules: string;
+}
+
+export interface OnboardingData {
+  name: string;
+  bio: string[];
+  systemPrompt: string;
+  style?: {
+    all: string[];
+    chat: string[];
+    post: string[];
+  };
+  adjectives?: string[];
+  topics?: string[];
+  messageExamples?: MessageExample[][];
+  provider?: string;
+  providerApiKey?: string;
+  telegramBotToken?: string;
+  discordBotToken?: string;
+}
+
+export interface PluginParamDef {
+  key: string;
+  type: string;
+  description: string;
+  required: boolean;
+  sensitive: boolean;
+  default?: string;
+  currentValue: string | null;
+  isSet: boolean;
+}
+
+export interface PluginInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  configured: boolean;
+  envKey: string | null;
+  category: "ai-provider" | "connector" | "database" | "feature";
+  parameters: PluginParamDef[];
+  validationErrors: Array<{ field: string; message: string }>;
+  validationWarnings: Array<{ field: string; message: string }>;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  timestamp: number;
+}
+
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface LogEntry {
+  timestamp: number;
+  level: string;
+  message: string;
+  source: string;
+}
+
+export interface ExtensionStatus {
+  relayReachable: boolean;
+  relayPort: number;
+  extensionPath: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket event handler
+// ---------------------------------------------------------------------------
+
+export type WsEventHandler = (data: Record<string, unknown>) => void;
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+export class MilaidyClient {
+  private _baseUrl: string;
+  private _explicitBase: boolean;
+  private ws: WebSocket | null = null;
+  private wsHandlers = new Map<string, Set<WsEventHandler>>();
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffMs = 500;
+
+  constructor(baseUrl?: string) {
+    this._explicitBase = baseUrl != null;
+    // Priority: explicit arg > Capacitor/Electron injected global > same origin (Vite proxy)
+    const global = typeof window !== "undefined"
+      ? (window as Record<string, unknown>).__MILAIDY_API_BASE__
+      : undefined;
+    this._baseUrl = baseUrl ?? (typeof global === "string" ? global : "");
+  }
+
+  /**
+   * Resolve the API base URL lazily.
+   * In Electron the main process injects window.__MILAIDY_API_BASE__ after the
+   * page loads (once the agent runtime starts). Re-checking on every call
+   * ensures we pick up the injected value even if it wasn't set at construction.
+   */
+  private get baseUrl(): string {
+    if (!this._baseUrl && !this._explicitBase && typeof window !== "undefined") {
+      const injected = (window as Record<string, unknown>).__MILAIDY_API_BASE__;
+      if (typeof injected === "string") {
+        this._baseUrl = injected;
+      }
+    }
+    return this._baseUrl;
+  }
+
+  /** True when we have a usable HTTP(S) API endpoint. */
+  get apiAvailable(): boolean {
+    if (this.baseUrl) return true;
+    if (typeof window !== "undefined") {
+      const proto = window.location.protocol;
+      return proto === "http:" || proto === "https:";
+    }
+    return false;
+  }
+
+  // --- REST API ---
+
+  private async fetch<T>(path: string, init?: RequestInit): Promise<T> {
+    if (!this.apiAvailable) {
+      throw new Error("API not available (no HTTP origin)");
+    }
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...init?.headers,
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText })) as Record<string, string>;
+      throw new Error(body.error ?? `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  async getStatus(): Promise<AgentStatus> {
+    return this.fetch("/api/status");
+  }
+
+  async getOnboardingStatus(): Promise<{ complete: boolean }> {
+    return this.fetch("/api/onboarding/status");
+  }
+
+  async getOnboardingOptions(): Promise<OnboardingOptions> {
+    return this.fetch("/api/onboarding/options");
+  }
+
+  async submitOnboarding(data: OnboardingData): Promise<void> {
+    await this.fetch("/api/onboarding", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async startAgent(): Promise<AgentStatus> {
+    const res = await this.fetch<{ status: AgentStatus }>("/api/agent/start", { method: "POST" });
+    return res.status;
+  }
+
+  async stopAgent(): Promise<AgentStatus> {
+    const res = await this.fetch<{ status: AgentStatus }>("/api/agent/stop", { method: "POST" });
+    return res.status;
+  }
+
+  async pauseAgent(): Promise<AgentStatus> {
+    const res = await this.fetch<{ status: AgentStatus }>("/api/agent/pause", { method: "POST" });
+    return res.status;
+  }
+
+  async resumeAgent(): Promise<AgentStatus> {
+    const res = await this.fetch<{ status: AgentStatus }>("/api/agent/resume", { method: "POST" });
+    return res.status;
+  }
+
+  async restartAgent(): Promise<AgentStatus> {
+    const res = await this.fetch<{ status: AgentStatus }>("/api/agent/restart", { method: "POST" });
+    return res.status;
+  }
+
+  async resetAgent(): Promise<void> {
+    await this.fetch("/api/agent/reset", { method: "POST" });
+  }
+
+  async getPlugins(): Promise<{ plugins: PluginInfo[] }> {
+    return this.fetch("/api/plugins");
+  }
+
+  async updatePlugin(id: string, config: Record<string, unknown>): Promise<void> {
+    await this.fetch(`/api/plugins/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(config),
+    });
+  }
+
+  async getSkills(): Promise<{ skills: SkillInfo[] }> {
+    return this.fetch("/api/skills");
+  }
+
+  async refreshSkills(): Promise<{ ok: boolean; skills: SkillInfo[] }> {
+    return this.fetch("/api/skills/refresh", { method: "POST" });
+  }
+
+  async getLogs(): Promise<{ entries: LogEntry[] }> {
+    return this.fetch("/api/logs");
+  }
+
+  async getExtensionStatus(): Promise<ExtensionStatus> {
+    return this.fetch("/api/extension/status");
+  }
+
+  // --- WebSocket ---
+
+  connectWs(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+
+    let host: string;
+    if (this.baseUrl) {
+      host = new URL(this.baseUrl).host;
+    } else {
+      // In non-HTTP environments (Electron capacitor-electron://, file://, etc.)
+      // window.location.host may be empty or a non-routable placeholder like "-".
+      const loc = window.location;
+      if (loc.protocol !== "http:" && loc.protocol !== "https:") return;
+      host = loc.host;
+    }
+
+    if (!host) return;
+
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${protocol}//${host}/ws`;
+
+    this.ws = new WebSocket(url);
+
+    this.ws.onopen = () => {
+      this.backoffMs = 500;
+    };
+
+    this.ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data as string) as Record<string, unknown>;
+        const type = data.type as string;
+        const handlers = this.wsHandlers.get(type);
+        if (handlers) {
+          for (const handler of handlers) {
+            handler(data);
+          }
+        }
+        // Also fire "all" handlers
+        const allHandlers = this.wsHandlers.get("*");
+        if (allHandlers) {
+          for (const handler of allHandlers) {
+            handler(data);
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    };
+
+    this.ws.onclose = () => {
+      this.ws = null;
+      this.scheduleReconnect();
+    };
+
+    this.ws.onerror = () => {
+      // close handler will fire
+    };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWs();
+    }, this.backoffMs);
+    this.backoffMs = Math.min(this.backoffMs * 1.5, 10000);
+  }
+
+  onWsEvent(type: string, handler: WsEventHandler): () => void {
+    if (!this.wsHandlers.has(type)) {
+      this.wsHandlers.set(type, new Set());
+    }
+    this.wsHandlers.get(type)!.add(handler);
+    return () => {
+      this.wsHandlers.get(type)?.delete(handler);
+    };
+  }
+
+  /**
+   * Send a chat message via the REST endpoint (reliable — does not depend on
+   * a WebSocket connection).  Returns the agent's response text.
+   */
+  async sendChatRest(text: string): Promise<{ text: string; agentName: string }> {
+    return this.fetch<{ text: string; agentName: string }>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  /** @deprecated Prefer {@link sendChatRest} — WebSocket chat may silently drop messages. */
+  sendChat(text: string): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "chat", text }));
+    }
+  }
+
+  disconnectWs(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws?.close();
+    this.ws = null;
+  }
+}
+
+// Singleton
+export const client = new MilaidyClient();

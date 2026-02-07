@@ -1,0 +1,103 @@
+/**
+ * E2E tests for Capacitor plugin builds and exports.
+ *
+ * Verifies that each built plugin:
+ * - Has a valid dist/ directory with CJS and ESM builds
+ * - package.json has correct entry points
+ * - package.json has platform metadata
+ * - ESM module can be dynamically imported
+ * - Exports the expected symbols
+ *
+ * These tests require plugins to be built first (bun run plugin:build).
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, it, expect } from "vitest";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const pluginsDir = path.resolve(here, "../apps/app/plugins");
+
+const PLUGINS = [
+  { dir: "gateway", name: "@milaidy/capacitor-gateway", exportName: "Gateway" },
+  { dir: "camera", name: "@milaidy/capacitor-camera", exportName: "Camera" },
+  { dir: "canvas", name: "@milaidy/capacitor-canvas", exportName: "Canvas" },
+  { dir: "desktop", name: "@milaidy/capacitor-desktop", exportName: "Desktop" },
+  { dir: "location", name: "@milaidy/capacitor-location", exportName: "Location" },
+  { dir: "screencapture", name: "@milaidy/capacitor-screencapture", exportName: "ScreenCapture" },
+  { dir: "swabble", name: "@milaidy/capacitor-swabble", exportName: "Swabble" },
+  { dir: "talkmode", name: "@milaidy/capacitor-talkmode", exportName: "TalkMode" },
+];
+
+describe("Capacitor Plugin Build Verification", () => {
+  for (const plugin of PLUGINS) {
+    describe(plugin.name, () => {
+      const dir = path.join(pluginsDir, plugin.dir);
+      const pkgPath = path.join(dir, "package.json");
+
+      it("package.json exists and is valid JSON", () => {
+        expect(fs.existsSync(pkgPath)).toBe(true);
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        expect(pkg.name).toBe(plugin.name);
+      });
+
+      it("has platform metadata", () => {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        expect(pkg.milaidy).toBeDefined();
+        expect(pkg.milaidy.runtime).toBeDefined();
+        expect(Array.isArray(pkg.milaidy.platforms)).toBe(true);
+        expect(pkg.milaidy.platforms.length).toBeGreaterThan(0);
+      });
+
+      it("has main, module, and types entry points", () => {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        expect(pkg.main).toBeDefined();
+        expect(pkg.module).toBeDefined();
+        expect(pkg.types).toBeDefined();
+      });
+
+      it("dist/ directory exists with built files", () => {
+        const distDir = path.join(dir, "dist");
+        const built = fs.existsSync(distDir);
+        if (!built) {
+          // Skip rather than fail — plugins may not be built in CI
+          console.warn(`[SKIP] ${plugin.name}: dist/ not found (run bun run plugin:build)`);
+          return;
+        }
+
+        // Check CJS bundle
+        expect(fs.existsSync(path.join(distDir, "plugin.cjs.js"))).toBe(true);
+        // Check ESM build
+        expect(fs.existsSync(path.join(distDir, "esm", "index.js"))).toBe(true);
+        // Check type declarations
+        expect(fs.existsSync(path.join(distDir, "esm", "index.d.ts"))).toBe(true);
+      });
+
+      it("ESM index.js exports expected symbols", async () => {
+        const esmPath = path.join(dir, "dist", "esm", "index.js");
+        if (!fs.existsSync(esmPath)) {
+          console.warn(`[SKIP] ${plugin.name}: ESM build not found`);
+          return;
+        }
+
+        const mod = await import(esmPath);
+        expect(mod[plugin.exportName]).toBeDefined();
+      });
+
+      it("definitions are exported", async () => {
+        const esmPath = path.join(dir, "dist", "esm", "index.js");
+        if (!fs.existsSync(esmPath)) {
+          console.warn(`[SKIP] ${plugin.name}: ESM build not found`);
+          return;
+        }
+
+        // All plugins re-export from definitions.ts
+        const mod = await import(esmPath);
+        const exportKeys = Object.keys(mod);
+        // Should have at least the main export + some type re-exports
+        expect(exportKeys.length).toBeGreaterThan(0);
+        expect(exportKeys).toContain(plugin.exportName);
+      });
+    });
+  }
+});

@@ -2,11 +2,11 @@
  * Navigation — tabs + onboarding.
  */
 
-export type Tab = "chat" | "inventory" | "plugins" | "skills" | "config" | "logs";
+export type Tab = "chat" | "inventory" | "plugins" | "store" | "skills" | "config" | "logs";
 
 export const TAB_GROUPS = [
   { label: "Chat", tabs: ["chat"] as Tab[] },
-  { label: "Manage", tabs: ["inventory", "plugins", "skills"] as Tab[] },
+  { label: "Manage", tabs: ["inventory", "plugins", "store", "skills"] as Tab[] },
   { label: "Settings", tabs: ["config", "logs"] as Tab[] },
 ] as const;
 
@@ -14,6 +14,7 @@ const TAB_PATHS: Record<Tab, string> = {
   chat: "/chat",
   inventory: "/inventory",
   plugins: "/plugins",
+  store: "/store",
   skills: "/skills",
   config: "/config",
   logs: "/logs",
@@ -64,6 +65,7 @@ export function titleForTab(tab: Tab): string {
     case "chat": return "Chat";
     case "inventory": return "Inventory";
     case "plugins": return "Plugins";
+    case "store": return "Store";
     case "skills": return "Skills";
     case "config": return "Config";
     case "logs": return "Logs";
@@ -76,6 +78,7 @@ export function subtitleForTab(tab: Tab): string {
     case "chat": return "Talk to your agent.";
     case "inventory": return "Tokens and NFTs across all wallets.";
     case "plugins": return "Manage plugins and integrations.";
+    case "store": return "Browse and install plugins from the registry.";
     case "skills": return "View available skills.";
     case "config": return "Agent settings and configuration.";
     case "logs": return "View agent logs.";

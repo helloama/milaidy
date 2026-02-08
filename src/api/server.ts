@@ -108,6 +108,8 @@ interface PluginEntry {
   configured: boolean;
   envKey: string | null;
   category: "ai-provider" | "connector" | "database" | "feature";
+  /** Where the plugin comes from: "bundled" (ships with Milaidy) or "store" (user-installed from registry). */
+  source: "bundled" | "store";
   configKeys: string[];
   parameters: PluginParamDef[];
   validationErrors: Array<{ field: string; message: string }>;
@@ -210,6 +212,88 @@ function buildParamDefs(
  * Discover available plugins from the bundled plugins.json manifest.
  * Falls back to filesystem scanning for monorepo development.
  */
+/**
+ * Build PluginEntry records for user-installed plugins (from the Store).
+ * These are tracked in config.plugins.installs and loaded at runtime,
+ * but don't appear in the bundled plugins.json manifest.
+ *
+ * We read the installed plugin's package.json to extract metadata
+ * (name, description, parameters) so they show up in the Plugins Manager
+ * with the same level of detail as bundled plugins.
+ */
+function discoverInstalledPlugins(
+  config: MilaidyConfig,
+  bundledIds: Set<string>,
+): PluginEntry[] {
+  const installs = config.plugins?.installs;
+  if (!installs || typeof installs !== "object") return [];
+
+  const entries: PluginEntry[] = [];
+
+  for (const [packageName, record] of Object.entries(installs)) {
+    // Derive a short id from the package name (e.g. "@elizaos/plugin-foo" → "foo")
+    const id = packageName
+      .replace(/^@[^/]+\/plugin-/, "")
+      .replace(/^@[^/]+\//, "")
+      .replace(/^plugin-/, "");
+
+    // Skip if it's already covered by the bundled manifest
+    if (bundledIds.has(id)) continue;
+
+    const category = categorizePlugin(id);
+    const installPath = record.installPath;
+
+    // Try to read the plugin's package.json for metadata
+    let name = packageName;
+    let description = `Installed from registry (v${record.version ?? "unknown"})`;
+
+    if (installPath) {
+      // Check npm layout first, then direct layout
+      const candidates = [
+        path.join(
+          installPath,
+          "node_modules",
+          ...packageName.split("/"),
+          "package.json",
+        ),
+        path.join(installPath, "package.json"),
+      ];
+      for (const pkgPath of candidates) {
+        try {
+          if (fs.existsSync(pkgPath)) {
+            const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+              name?: string;
+              description?: string;
+            };
+            if (pkg.name) name = pkg.name;
+            if (pkg.description) description = pkg.description;
+            break;
+          }
+        } catch {
+          // ignore read errors
+        }
+      }
+    }
+
+    entries.push({
+      id,
+      name,
+      description,
+      enabled: false, // Will be updated against the runtime below
+      configured: true,
+      envKey: null,
+      category,
+      source: "store",
+      configKeys: [],
+      parameters: [],
+      validationErrors: [],
+      validationWarnings: [],
+    });
+  }
+
+  return entries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function discoverPluginsFromManifest(): PluginEntry[] {
   const thisDir =
     import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
@@ -256,6 +340,7 @@ function discoverPluginsFromManifest(): PluginEntry[] {
             configured,
             envKey,
             category,
+            source: "bundled" as const,
             configKeys: p.configKeys,
             parameters,
             validationErrors: validation.errors,
@@ -1459,10 +1544,25 @@ async function handleRequest(
 
   // ── GET /api/plugins ────────────────────────────────────────────────────
   if (method === "GET" && pathname === "/api/plugins") {
+    // Re-read config from disk so we pick up plugins installed since server start.
+    // The install endpoint writes to milaidy.json but state.config is only loaded
+    // once at server startup, so it would be stale without this refresh.
+    let freshConfig: MilaidyConfig;
+    try {
+      freshConfig = loadMilaidyConfig();
+    } catch {
+      freshConfig = state.config;
+    }
+
+    // Merge user-installed plugins into the list (they don't exist in plugins.json)
+    const bundledIds = new Set(state.plugins.map((p) => p.id));
+    const installedEntries = discoverInstalledPlugins(freshConfig, bundledIds);
+    const allPlugins = [...state.plugins, ...installedEntries];
+
     // Update enabled status from runtime (if available)
     if (state.runtime) {
       const loadedNames = state.runtime.plugins.map((p) => p.name);
-      for (const plugin of state.plugins) {
+      for (const plugin of allPlugins) {
         const suffix = `plugin-${plugin.id}`;
         plugin.enabled = loadedNames.some(
           (name) =>
@@ -1474,7 +1574,7 @@ async function handleRequest(
     }
 
     // Always refresh current env values and re-validate
-    for (const plugin of state.plugins) {
+    for (const plugin of allPlugins) {
       for (const param of plugin.parameters) {
         const envValue = process.env[param.key];
         param.isSet = Boolean(envValue && envValue.trim());
@@ -1504,7 +1604,7 @@ async function handleRequest(
       plugin.validationWarnings = validation.warnings;
     }
 
-    json(res, { plugins: state.plugins });
+    json(res, { plugins: allPlugins });
     return;
   }
 
@@ -1592,9 +1692,28 @@ async function handleRequest(
     const { getRegistryPlugins } = await import(
       "../services/registry-client.js"
     );
+    const { listInstalledPlugins } = await import(
+      "../services/plugin-installer.js"
+    );
     try {
       const registry = await getRegistryPlugins();
-      const plugins = Array.from(registry.values());
+      const installed = await listInstalledPlugins();
+      const installedNames = new Set(installed.map((p) => p.name));
+
+      // Also check which plugins are loaded in the runtime
+      const loadedNames = state.runtime
+        ? new Set(state.runtime.plugins.map((p) => p.name))
+        : new Set<string>();
+
+      const plugins = Array.from(registry.values()).map((p) => ({
+        ...p,
+        installed: installedNames.has(p.name),
+        installedVersion:
+          installed.find((i) => i.name === p.name)?.version ?? null,
+        loaded:
+          loadedNames.has(p.name) ||
+          loadedNames.has(p.name.replace("@elizaos/", "")),
+      }));
       json(res, { count: plugins.length, plugins });
     } catch (err) {
       error(

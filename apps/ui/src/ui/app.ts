@@ -21,6 +21,7 @@ import {
   type WalletNftsResponse,
   type WalletConfigStatus,
   type WalletExportResult,
+  type RegistryPlugin,
 } from "./api-client.js";
 import { tabFromPath, pathForTab, type Tab, TAB_GROUPS, titleForTab } from "./navigation.js";
 
@@ -40,7 +41,7 @@ export class MilaidyApp extends LitElement {
   @state() chatInput = "";
   @state() chatSending = false;
   @state() plugins: PluginInfo[] = [];
-  @state() pluginFilter: "all" | "ai-provider" | "connector" | "database" | "feature" = "all";
+  @state() pluginFilter: "all" | "store" | "ai-provider" | "connector" | "database" | "feature" = "all";
   @state() pluginSearch = "";
   @state() pluginSettingsOpen: Set<string> = new Set();
   @state() skills: SkillInfo[] = [];
@@ -69,6 +70,16 @@ export class MilaidyApp extends LitElement {
   @state() walletApiKeySaving = false;
   @state() inventorySort: "chain" | "symbol" | "value" = "value";
   @state() walletError: string | null = null;
+
+  // Plugin Store state
+  @state() storePlugins: RegistryPlugin[] = [];
+  @state() storeSearch = "";
+  @state() storeFilter: "all" | "installed" | "ai-provider" | "connector" | "feature" = "all";
+  @state() storeLoading = false;
+  @state() storeInstalling: Set<string> = new Set();
+  @state() storeUninstalling: Set<string> = new Set();
+  @state() storeError: string | null = null;
+  @state() storeDetailPlugin: RegistryPlugin | null = null;
 
   // Onboarding wizard state
   @state() onboardingStep = 0;
@@ -991,6 +1002,226 @@ export class MilaidyApp extends LitElement {
       font-family: var(--mono);
     }
 
+    /* Plugin Store */
+    .store-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .store-card {
+      border: 1px solid var(--border);
+      background: var(--card);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.15s ease;
+    }
+
+    .store-card:hover {
+      border-color: var(--accent);
+    }
+
+    .store-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    .store-card-name {
+      font-weight: bold;
+      font-size: 13px;
+      word-break: break-all;
+    }
+
+    .store-card-desc {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .store-card-meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .store-card-meta .meta-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .store-card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: auto;
+      padding-top: 8px;
+      border-top: 1px solid var(--border);
+    }
+
+    .store-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-family: var(--mono);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+
+    .store-badge.installed {
+      color: var(--ok);
+      border-color: var(--ok);
+      background: rgba(46, 204, 113, 0.08);
+    }
+
+    .store-badge.loaded {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: rgba(var(--accent-rgb, 100, 100, 255), 0.08);
+    }
+
+    .store-install-btn {
+      padding: 4px 14px;
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: var(--accent-foreground);
+      cursor: pointer;
+      font-size: 11px;
+      font-family: var(--mono);
+      transition: all 0.15s ease;
+    }
+
+    .store-install-btn:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .store-install-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .store-install-btn.uninstall {
+      background: transparent;
+      color: var(--danger, #e74c3c);
+      border-color: var(--danger, #e74c3c);
+    }
+
+    .store-install-btn.uninstall:hover:not(:disabled) {
+      background: rgba(231, 76, 60, 0.08);
+    }
+
+    .store-install-btn.installing {
+      background: var(--bg-muted);
+      border-color: var(--border);
+      color: var(--muted);
+    }
+
+    .store-topics {
+      display: flex;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .store-topic {
+      display: inline-block;
+      padding: 1px 6px;
+      font-size: 10px;
+      border-radius: 8px;
+      background: var(--bg-muted);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .store-detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .store-detail-panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      max-width: 560px;
+      width: 100%;
+      max-height: 80vh;
+      overflow-y: auto;
+      padding: 24px;
+    }
+
+    .store-detail-panel h3 {
+      margin: 0 0 4px 0;
+      font-size: 18px;
+    }
+
+    .store-detail-panel .detail-desc {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .store-detail-panel .detail-row {
+      display: flex;
+      gap: 8px;
+      font-size: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .store-detail-panel .detail-label {
+      color: var(--muted);
+      min-width: 80px;
+      font-weight: 600;
+    }
+
+    .store-detail-panel .detail-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .store-summary-bar {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      margin-bottom: 16px;
+      padding: 10px 16px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-size: 12px;
+    }
+
+    .store-summary-stat {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .store-summary-stat .stat-value {
+      font-weight: bold;
+      font-family: var(--mono);
+    }
+
+    .store-summary-stat .stat-label {
+      color: var(--muted);
+    }
+
     /* Logs */
     .logs-container {
       font-family: var(--mono);
@@ -1114,6 +1345,7 @@ export class MilaidyApp extends LitElement {
       this.tab = tab;
       if (tab === "inventory") this.loadInventory();
       if (tab === "plugins") this.loadPlugins();
+      if (tab === "store") this.loadStore();
       if (tab === "skills") this.loadSkills();
       if (tab === "config") { this.checkExtensionStatus(); this.loadWalletConfig(); }
       if (tab === "logs") this.loadLogs();
@@ -1128,6 +1360,7 @@ export class MilaidyApp extends LitElement {
     // Load data for the tab
     if (tab === "inventory") this.loadInventory();
     if (tab === "plugins") this.loadPlugins();
+    if (tab === "store") this.loadStore();
     if (tab === "skills") this.loadSkills();
     if (tab === "config") { this.checkExtensionStatus(); this.loadWalletConfig(); }
     if (tab === "logs") this.loadLogs();
@@ -1138,6 +1371,373 @@ export class MilaidyApp extends LitElement {
       const { plugins } = await client.getPlugins();
       this.plugins = plugins;
     } catch { /* ignore */ }
+  }
+
+  // --- Plugin Store ---
+
+  private async loadStore(): Promise<void> {
+    this.storeLoading = true;
+    this.storeError = null;
+    try {
+      const { plugins } = await client.getRegistryPlugins();
+      this.storePlugins = plugins;
+    } catch (err) {
+      this.storeError = `Failed to load plugin registry: ${err instanceof Error ? err.message : "network error"}`;
+    }
+    this.storeLoading = false;
+  }
+
+  private async handleStoreInstall(pluginName: string): Promise<void> {
+    const next = new Set(this.storeInstalling);
+    next.add(pluginName);
+    this.storeInstalling = next;
+    this.storeError = null;
+
+    try {
+      const result = await client.installRegistryPlugin(pluginName);
+      if (!result.ok) {
+        this.storeError = result.error ?? `Failed to install ${pluginName}`;
+      } else {
+        // Refresh the store list to update installed status
+        await this.loadStore();
+        // Also refresh the plugins manager view
+        this.loadPlugins();
+      }
+    } catch (err) {
+      this.storeError = `Install failed: ${err instanceof Error ? err.message : "network error"}`;
+    }
+
+    const done = new Set(this.storeInstalling);
+    done.delete(pluginName);
+    this.storeInstalling = done;
+  }
+
+  private async handleStoreUninstall(pluginName: string): Promise<void> {
+    const confirmed = window.confirm(
+      `Uninstall ${pluginName}?\n\nThis will remove the plugin and restart the agent.`,
+    );
+    if (!confirmed) return;
+
+    const next = new Set(this.storeUninstalling);
+    next.add(pluginName);
+    this.storeUninstalling = next;
+    this.storeError = null;
+
+    try {
+      const result = await client.uninstallRegistryPlugin(pluginName);
+      if (!result.ok) {
+        this.storeError = result.error ?? `Failed to uninstall ${pluginName}`;
+      } else {
+        await this.loadStore();
+        this.loadPlugins();
+      }
+    } catch (err) {
+      this.storeError = `Uninstall failed: ${err instanceof Error ? err.message : "network error"}`;
+    }
+
+    const done = new Set(this.storeUninstalling);
+    done.delete(pluginName);
+    this.storeUninstalling = done;
+  }
+
+  private async handleStoreRefresh(): Promise<void> {
+    this.storeLoading = true;
+    this.storeError = null;
+    try {
+      await client.refreshRegistry();
+      await this.loadStore();
+    } catch (err) {
+      this.storeError = `Refresh failed: ${err instanceof Error ? err.message : "network error"}`;
+      this.storeLoading = false;
+    }
+  }
+
+  private categorizeStorePlugin(name: string): string {
+    const aiProviders = ["openai", "anthropic", "groq", "xai", "ollama", "openrouter", "google", "deepseek", "mistral", "together", "cohere", "perplexity", "qwen", "minimax"];
+    const connectors = ["discord", "telegram", "slack", "whatsapp", "signal", "imessage", "bluebubbles", "msteams", "mattermost", "google-chat", "farcaster", "lens", "twitter", "nostr", "matrix", "feishu"];
+    const lower = name.toLowerCase();
+    if (aiProviders.some(p => lower.includes(p))) return "ai-provider";
+    if (connectors.some(c => lower.includes(c))) return "connector";
+    return "feature";
+  }
+
+  private renderStore() {
+    const searchLower = this.storeSearch.toLowerCase();
+
+    const filtered = this.storePlugins.filter((p) => {
+      // Category filter
+      if (this.storeFilter === "installed" && !p.installed) return false;
+      if (this.storeFilter === "ai-provider" && this.categorizeStorePlugin(p.name) !== "ai-provider") return false;
+      if (this.storeFilter === "connector" && this.categorizeStorePlugin(p.name) !== "connector") return false;
+      if (this.storeFilter === "feature" && this.categorizeStorePlugin(p.name) !== "feature") return false;
+      // Search filter
+      if (searchLower) {
+        const matchesName = p.name.toLowerCase().includes(searchLower);
+        const matchesDesc = (p.description ?? "").toLowerCase().includes(searchLower);
+        const matchesTopic = p.topics.some(t => t.toLowerCase().includes(searchLower));
+        if (!matchesName && !matchesDesc && !matchesTopic) return false;
+      }
+      return true;
+    });
+
+    const installedCount = this.storePlugins.filter(p => p.installed).length;
+    const loadedCount = this.storePlugins.filter(p => p.loaded).length;
+
+    const categories = ["all", "installed", "ai-provider", "connector", "feature"] as const;
+    const categoryLabels: Record<string, string> = {
+      "all": "All",
+      "installed": "Installed",
+      "ai-provider": "AI Providers",
+      "connector": "Connectors",
+      "feature": "Features",
+    };
+
+    const categoryCount = (cat: string): number => {
+      if (cat === "all") return this.storePlugins.length;
+      if (cat === "installed") return installedCount;
+      return this.storePlugins.filter(p => this.categorizeStorePlugin(p.name) === cat).length;
+    };
+
+    return html`
+      <h2>Plugin Store</h2>
+      <p class="subtitle">Browse, search, and install plugins from the ElizaOS registry.</p>
+
+      ${this.storeError ? html`
+        <div style="margin-bottom:12px;padding:10px 14px;border:1px solid var(--danger, #e74c3c);background:rgba(231,76,60,0.06);font-size:12px;color:var(--danger, #e74c3c);">
+          ${this.storeError}
+          <button style="float:right;background:none;border:none;color:var(--danger, #e74c3c);cursor:pointer;font-size:14px;" @click=${() => { this.storeError = null; }}>✕</button>
+        </div>
+      ` : ""}
+
+      <div class="store-summary-bar">
+        <div class="store-summary-stat">
+          <span class="stat-value">${this.storePlugins.length}</span>
+          <span class="stat-label">available</span>
+        </div>
+        <div class="store-summary-stat">
+          <span class="stat-value" style="color:var(--ok);">${installedCount}</span>
+          <span class="stat-label">installed</span>
+        </div>
+        <div class="store-summary-stat">
+          <span class="stat-value" style="color:var(--accent);">${loadedCount}</span>
+          <span class="stat-label">active</span>
+        </div>
+        <div style="margin-left:auto;">
+          <button class="btn" style="font-size:11px;padding:3px 10px;margin:0;" @click=${this.handleStoreRefresh} ?disabled=${this.storeLoading}>
+            ${this.storeLoading ? "Refreshing..." : "Refresh Registry"}
+          </button>
+        </div>
+      </div>
+
+      <input
+        class="plugin-search"
+        type="text"
+        placeholder="Search plugins by name, description, or topic..."
+        .value=${this.storeSearch}
+        @input=${(e: Event) => { this.storeSearch = (e.target as HTMLInputElement).value; }}
+      />
+
+      <div class="plugin-filters" style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;">
+        ${categories.map(
+          (cat) => html`
+            <button
+              class="filter-btn ${this.storeFilter === cat ? "active" : ""}"
+              @click=${() => { this.storeFilter = cat; }}
+              style="
+                padding: 4px 12px;
+                border-radius: 12px;
+                border: 1px solid var(--border);
+                background: ${this.storeFilter === cat ? "var(--accent)" : "var(--surface)"};
+                color: ${this.storeFilter === cat ? "#fff" : "var(--text)"};
+                cursor: pointer;
+                font-size: 12px;
+              "
+            >${categoryLabels[cat]} (${categoryCount(cat)})</button>
+          `,
+        )}
+      </div>
+
+      ${this.storeLoading && this.storePlugins.length === 0
+        ? html`<div class="empty-state">Loading plugin registry...</div>`
+        : filtered.length === 0
+          ? html`<div class="empty-state">${this.storeSearch ? "No plugins match your search." : "No plugins in this category."}</div>`
+          : html`
+              <div class="store-grid">
+                ${filtered.map((p) => this.renderStoreCard(p))}
+              </div>
+            `
+      }
+
+      ${this.storeDetailPlugin ? this.renderStoreDetail(this.storeDetailPlugin) : ""}
+    `;
+  }
+
+  private renderStoreCard(p: RegistryPlugin) {
+    const installing = this.storeInstalling.has(p.name);
+    const uninstalling = this.storeUninstalling.has(p.name);
+    const version = p.npm.v2Version || p.npm.v1Version || p.npm.v0Version;
+    const category = this.categorizeStorePlugin(p.name);
+
+    return html`
+      <div class="store-card">
+        <div class="store-card-header">
+          <div style="flex:1;min-width:0;">
+            <div class="store-card-name">${p.name.replace("@elizaos/plugin-", "")}</div>
+            <div style="font-size:10px;color:var(--muted);font-family:var(--mono);margin-top:2px;">${p.name}</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;">
+            ${p.loaded ? html`<span class="store-badge loaded">active</span>` : ""}
+            ${p.installed ? html`<span class="store-badge installed">installed</span>` : ""}
+          </div>
+        </div>
+
+        <div class="store-card-desc">${p.description || "No description available."}</div>
+
+        <div class="store-card-meta">
+          ${version ? html`<span class="meta-item"><span>v${version}</span></span>` : ""}
+          ${p.stars > 0 ? html`<span class="meta-item">★ ${p.stars}</span>` : ""}
+          <span class="meta-item" style="padding:1px 6px;border-radius:8px;background:var(--bg-muted);border:1px solid var(--border);">${
+            category === "ai-provider" ? "ai provider"
+            : category === "connector" ? "connector"
+            : "feature"
+          }</span>
+        </div>
+
+        ${p.topics.length > 0 ? html`
+          <div class="store-topics">
+            ${p.topics.slice(0, 4).map(t => html`<span class="store-topic">${t}</span>`)}
+            ${p.topics.length > 4 ? html`<span class="store-topic">+${p.topics.length - 4}</span>` : ""}
+          </div>
+        ` : ""}
+
+        <div class="store-card-footer">
+          <button
+            style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:11px;padding:0;text-decoration:underline;"
+            @click=${() => { this.storeDetailPlugin = p; }}
+          >Details</button>
+
+          ${p.installed
+            ? html`
+                <button
+                  class="store-install-btn uninstall"
+                  @click=${() => this.handleStoreUninstall(p.name)}
+                  ?disabled=${uninstalling}
+                >${uninstalling ? "Removing..." : "Uninstall"}</button>
+              `
+            : html`
+                <button
+                  class="store-install-btn ${installing ? "installing" : ""}"
+                  @click=${() => this.handleStoreInstall(p.name)}
+                  ?disabled=${installing}
+                >${installing ? "Installing..." : "Install"}</button>
+              `
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  private renderStoreDetail(p: RegistryPlugin) {
+    const installing = this.storeInstalling.has(p.name);
+    const uninstalling = this.storeUninstalling.has(p.name);
+    const version = p.npm.v2Version || p.npm.v1Version || p.npm.v0Version;
+    const supported: string[] = [];
+    if (p.supports.v0) supported.push("v0");
+    if (p.supports.v1) supported.push("v1");
+    if (p.supports.v2) supported.push("v2");
+
+    return html`
+      <div class="store-detail-overlay" @click=${(e: Event) => {
+        if ((e.target as HTMLElement).classList.contains("store-detail-overlay")) {
+          this.storeDetailPlugin = null;
+        }
+      }}>
+        <div class="store-detail-panel">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+            <div>
+              <h3>${p.name}</h3>
+              <div style="display:flex;gap:4px;margin-top:4px;">
+                ${p.loaded ? html`<span class="store-badge loaded">active</span>` : ""}
+                ${p.installed ? html`<span class="store-badge installed">installed${p.installedVersion ? ` v${p.installedVersion}` : ""}</span>` : ""}
+              </div>
+            </div>
+            <button
+              style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;padding:4px;"
+              @click=${() => { this.storeDetailPlugin = null; }}
+            >✕</button>
+          </div>
+
+          <div class="detail-desc">${p.description || "No description available."}</div>
+
+          <div class="detail-row">
+            <span class="detail-label">Package</span>
+            <span style="font-family:var(--mono);font-size:12px;">${p.npm.package || p.name}</span>
+          </div>
+          ${version ? html`
+            <div class="detail-row">
+              <span class="detail-label">Version</span>
+              <span>${version}</span>
+            </div>
+          ` : ""}
+          <div class="detail-row">
+            <span class="detail-label">Repository</span>
+            <a href="https://github.com/${p.gitRepo}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;">${p.gitRepo}</a>
+          </div>
+          ${p.homepage ? html`
+            <div class="detail-row">
+              <span class="detail-label">Homepage</span>
+              <a href="${p.homepage}" target="_blank" rel="noopener" style="color:var(--accent);font-size:12px;">${p.homepage}</a>
+            </div>
+          ` : ""}
+          <div class="detail-row">
+            <span class="detail-label">Language</span>
+            <span>${p.language}</span>
+          </div>
+          ${p.stars > 0 ? html`
+            <div class="detail-row">
+              <span class="detail-label">Stars</span>
+              <span>★ ${p.stars.toLocaleString()}</span>
+            </div>
+          ` : ""}
+          ${supported.length > 0 ? html`
+            <div class="detail-row">
+              <span class="detail-label">Supports</span>
+              <span>${supported.join(", ")}</span>
+            </div>
+          ` : ""}
+          ${p.topics.length > 0 ? html`
+            <div class="detail-row" style="border-bottom:none;">
+              <span class="detail-label">Topics</span>
+              <div class="store-topics">${p.topics.map(t => html`<span class="store-topic">${t}</span>`)}</div>
+            </div>
+          ` : ""}
+
+          <div class="detail-actions">
+            ${p.installed
+              ? html`
+                  <button
+                    class="store-install-btn uninstall"
+                    @click=${() => this.handleStoreUninstall(p.name)}
+                    ?disabled=${uninstalling}
+                  >${uninstalling ? "Removing..." : "Uninstall"}</button>
+                `
+              : html`
+                  <button
+                    class="store-install-btn ${installing ? "installing" : ""}"
+                    @click=${() => this.handleStoreInstall(p.name)}
+                    ?disabled=${installing}
+                  >${installing ? "Install Plugin" : "Install Plugin"}</button>
+                `
+            }
+            <button
+              class="btn btn-outline"
+              style="font-size:11px;padding:4px 14px;margin:0;"
+              @click=${() => { this.storeDetailPlugin = null; }}
+            >Close</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   private async loadSkills(): Promise<void> {
@@ -1604,6 +2204,7 @@ export class MilaidyApp extends LitElement {
       case "chat": return this.renderChat();
       case "inventory": return this.renderInventory();
       case "plugins": return this.renderPlugins();
+      case "store": return this.renderStore();
       case "skills": return this.renderSkills();
       case "config": return this.renderConfig();
       case "logs": return this.renderLogs();
@@ -1663,9 +2264,10 @@ export class MilaidyApp extends LitElement {
   }
 
   private renderPlugins() {
-    const categories = ["all", "ai-provider", "connector", "database", "feature"] as const;
+    const categories = ["all", "store", "ai-provider", "connector", "database", "feature"] as const;
     const categoryLabels: Record<string, string> = {
       "all": "All",
+      "store": "From Store",
       "ai-provider": "AI Provider",
       "connector": "Connector",
       "database": "Database",
@@ -1674,7 +2276,10 @@ export class MilaidyApp extends LitElement {
 
     const searchLower = this.pluginSearch.toLowerCase();
     const filtered = this.plugins.filter((p) => {
-      const matchesCategory = this.pluginFilter === "all" || p.category === this.pluginFilter;
+      const matchesCategory =
+        this.pluginFilter === "all"
+        || (this.pluginFilter === "store" && p.source === "store")
+        || (this.pluginFilter !== "store" && p.category === this.pluginFilter);
       const matchesSearch = !searchLower
         || p.name.toLowerCase().includes(searchLower)
         || (p.description ?? "").toLowerCase().includes(searchLower)
@@ -1720,7 +2325,11 @@ export class MilaidyApp extends LitElement {
                 cursor: pointer;
                 font-size: 12px;
               "
-            >${cat === "all" ? `All (${this.plugins.length})` : `${categoryLabels[cat]} (${this.plugins.filter((p) => p.category === cat).length})`}</button>
+            >${cat === "all"
+              ? `All (${this.plugins.length})`
+              : cat === "store"
+                ? `${categoryLabels[cat]} (${this.plugins.filter((p) => p.source === "store").length})`
+                : `${categoryLabels[cat]} (${this.plugins.filter((p) => p.category === cat).length})`}</button>
           `,
         )}
       </div>
@@ -1748,6 +2357,7 @@ export class MilaidyApp extends LitElement {
                             : p.category === "database" ? "database"
                             : "feature"
                           }</span>
+                          ${p.source === "store" ? html`<span style="font-size:10px;padding:2px 6px;border-radius:8px;background:rgba(46,204,113,0.08);border:1px solid var(--ok);color:var(--ok);">from store</span>` : ""}
                         </div>
                         <div class="plugin-desc">${p.description || "No description"}</div>
                       </div>
